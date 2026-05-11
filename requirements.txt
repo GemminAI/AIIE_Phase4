@@ -1,0 +1,22 @@
+# AIIE Phase 4 requirements
+# pip install -r requirements.txt
+
+torch>=2.0.0
+transformers>=4.40.0
+datasets>=2.18.0
+accelerate>=0.28.0
+
+# Optimal Transport (Phase 3 と共通)
+POT>=0.9.0
+
+# 数値計算
+numpy>=1.24.0
+scipy>=1.11.0
+
+# 可視化
+matplotlib>=3.8.0
+seaborn>=0.13.0
+networkx>=3.2.0
+
+# ユーティリティ
+tqdm>=4.66.0
