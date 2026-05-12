@@ -1,0 +1,16 @@
+{
+  "HSR": 1.0,
+  "EP": 0.41666666666666663,
+  "IE": 0.4166666666666667,
+  "baseline_accuracy": 0.5833333333333334,
+  "esk_accuracy": 1.0,
+  "type_A_confident_falsehood": 1,
+  "type_A_corrected": 1,
+  "type_B_decision_dissolution": 19,
+  "type_B_recovered": 19,
+  "n_interventions": 48,
+  "n_false_positives": 28,
+  "tau": 0.043,
+  "sigma_code_to_legal": 1.1622,
+  "timestamp": "2026-05-12T13:18:53+00:00"
+}
