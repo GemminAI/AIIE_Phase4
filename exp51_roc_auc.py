@@ -39,29 +39,93 @@ from phase4_extractor import extract_hidden_states_for_response, load_model
 # ──────────────────────────────────────────────
 SIGMA_CODE_LEGAL = 1.1622  # Exp 4.1確定値
 
+# Grounded Score 2.0 weights（Exp 4.2実測値から導出）
+ALPHA = 1.0   # LogProb term weight
+BETA  = 1.0   # Spike position term weight
+GAMMA = 0.5   # Lead time term weight（kの分散が大きいため0.5に抑制）
+
+# Dynamic threshold（Exp 4.2確定値）
+DYNAMIC_THRESHOLD = 0.04302
+LOGPROB_THRESHOLD = -2.0
+
+
+def compute_lead_time_from_record(
+    kappas: np.ndarray,
+    logprobs: np.ndarray,
+    kappa_threshold: float = DYNAMIC_THRESHOLD,
+    logprob_threshold: float = LOGPROB_THRESHOLD,
+) -> int:
+    """
+    κ_tスパイクステップ と LogProb異常ステップ の差を計算。
+    Benignレコード用（lead_time_kが保存されていない場合）。
+    """
+    # κ_tスパイク
+    kappa_step = -1
+    for t, k in enumerate(kappas):
+        if k > kappa_threshold:
+            kappa_step = t
+            break
+
+    # LogProb異常（平均-2σ以下）
+    lp_mean = np.mean(logprobs)
+    lp_std  = np.std(logprobs)
+    logprob_step = -1
+    for t, lp in enumerate(logprobs):
+        if lp < lp_mean - 2 * lp_std:
+            logprob_step = t
+            break
+
+    if kappa_step >= 0 and logprob_step >= 0:
+        return logprob_step - kappa_step
+    return 0  # 計算不能な場合はニュートラル
+
 
 def extract_scores(record: Dict) -> Dict[str, float]:
     """
-    1レコードから3つのスコアを抽出する。
-    
-    record は exp42_detail_records.pkl の各要素、
-    または Benign抽出結果（同構造）を想定。
+    Grounded Score 2.0:
+      S = α(-log p_min) + β(1 - s_κ) + γk
+
+    - α(-log p_min): Outcome  — 統計的崩壊（LogProbの最小値）
+    - β(1 - s_κ):   Deformation — 幾何学的屈曲（スパイク位置の早さ）
+    - γk:           Lead Time  — 認識論的余裕（曲率がLogProbより何ステップ早いか）
+
+    実測値による分離方向:
+      logprob_min:   adv=-9.10 < ben=-7.46  → -logprob_min（大=異常）
+      spike_pos:     adv=0.781 < ben=0.863  → 1-spike_pos（大=早期崩壊=異常）
+      lead_time_k:   adv=1.33（先行）       → k（正=異常）
     """
-    # κ_t_max: カモフラージュ軌道の最大曲率
-    kappas = np.array(record.get("camouflage_kappas", record.get("benign_kappas", [])))
-    kappa_max = float(np.max(kappas)) if len(kappas) > 0 else 0.0
-
-    # LogProb_min: カモフラージュlogprobの最小値（負値→大きいほど異常）
+    # キーの解決（adv/benで異なるキー名）
+    kappas   = np.array(record.get("camouflage_kappas",  record.get("benign_kappas",  [])))
     logprobs = np.array(record.get("camouflage_logprobs", record.get("benign_logprobs", [])))
-    logprob_min = float(np.min(logprobs)) if len(logprobs) > 0 else 0.0
 
-    # Grounded: κ_t_max / σ（伝導率補正）
-    grounded = kappa_max / SIGMA_CODE_LEGAL
+    # ── Outcome term: α(-log p_min) ──
+    logprob_min   = float(np.min(logprobs)) if len(logprobs) > 0 else 0.0
+    score_logprob = -logprob_min  # 大=異常
+
+    # ── Deformation term: β(1 - s_κ) ──
+    T         = len(kappas)
+    spike_pos = float(np.argmax(kappas)) / (T + 1e-8) if T > 0 else 0.5
+    score_deformation = 1.0 - spike_pos  # 早期スパイク=大=異常
+
+    # ── Lead Time term: γk ──
+    if "lead_time_k" in record and record["lead_time_k"] is not None:
+        k = float(record["lead_time_k"])
+    else:
+        # Benignレコード: リアルタイム計算
+        k = float(compute_lead_time_from_record(kappas, logprobs))
+    score_leadtime = k  # 正=κ_t先行=異常
+
+    # ── Grounded Score 2.0 ──
+    grounded_v2 = (
+        ALPHA * score_logprob
+        + BETA  * score_deformation
+        + GAMMA * score_leadtime
+    )
 
     return {
-        "kappa_max":   kappa_max,
-        "logprob_min": -logprob_min,  # 符号反転（大→異常）
-        "grounded":    grounded,
+        "logprob_min":    score_logprob,
+        "kappa_t_max":    score_deformation,   # 実態はspike_position
+        "grounded":       grounded_v2,
     }
 
 
@@ -135,7 +199,7 @@ def compute_roc_auc(
         all_records.append(scores)
 
     labels      = np.array([r["label"]      for r in all_records])
-    kappa_scores    = np.array([r["kappa_max"]   for r in all_records])
+    kappa_scores    = np.array([r["kappa_t_max"] for r in all_records])
     logprob_scores  = np.array([r["logprob_min"] for r in all_records])
     grounded_scores = np.array([r["grounded"]    for r in all_records])
 
@@ -166,11 +230,11 @@ def plot_roc_curves(roc_results: Dict, output_path: str, n_adv: int, n_benign: i
 
     styles = {
         "LogProb_min": {"color": "#9E9E9E", "linestyle": "--", "linewidth": 2.0,
-                        "label_prefix": "Baseline"},
+                        "label_prefix": "Baseline (Outcome)"},
         "kappa_t_max": {"color": "#2196F3", "linestyle": "-.",  "linewidth": 2.0,
-                        "label_prefix": "Geometry"},
+                        "label_prefix": "Geometry (Deformation)"},
         "Grounded":    {"color": "#E91E63", "linestyle": "-",   "linewidth": 2.5,
-                        "label_prefix": "Grounded (Proposed)"},
+                        "label_prefix": "Grounded Score 2.0 (Proposed)"},
     }
 
     for name, style in styles.items():
@@ -199,7 +263,7 @@ def plot_roc_curves(roc_results: Dict, output_path: str, n_adv: int, n_benign: i
     ax.set_xlabel("False Positive Rate", fontsize=12)
     ax.set_ylabel("True Positive Rate", fontsize=12)
     ax.set_title(
-        f"Figure 18: ROC Curves — Hallucination Detection\n"
+        f"Figure 18: ROC Curves — Grounded Score 2.0 vs Baselines\n"
         f"Code→Legal Camouflage (σ=1.162), "
         f"n_adv={n_adv}, n_benign={n_benign}",
         fontsize=12, fontweight="bold"
