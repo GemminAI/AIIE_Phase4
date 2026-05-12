@@ -12,6 +12,7 @@ POT>=0.9.0
 # 数値計算
 numpy>=1.24.0
 scipy>=1.11.0
+scikit-learn>=1.3.0
 
 # 可視化
 matplotlib>=3.8.0

@@ -485,3 +485,110 @@ def load_adversarial_code_legal(cfg, seed: int = 42, n_pairs: int = 99) -> List[
     rng.shuffle(pairs)
     print(f"[Adversarial Code→Legal Reasoning-First] {len(pairs)} pairs generated")
     return pairs
+
+
+def load_benign_code_legal(cfg, seed: int = 42, n_pairs: int = 99) -> List[Dict]:
+    """
+    Exp 5.1用: Benign（正常推論）の code→legal ペア
+    
+    設計:
+    - コードと法的結論が一致している正常ペア
+    - Reasoning-First形式（Exp 4.2と同じプロンプト構造）
+    - label=0（正常）として使用
+    
+    3タイプ（Adversarialと対応）:
+    TYPE_A_BENIGN: GDPR準拠チェック（正しい結論）
+    TYPE_B_BENIGN: 成年年齢確認（正しいboundary）
+    TYPE_C_BENIGN: 契約有効性（正しい論理）
+    """
+    rng = random.Random(seed)
+    pairs = []
+
+    def make_benign_prompt(code: str, question: str) -> str:
+        return (
+            f"Analyze the following code implementation for legal compliance.\n"
+            f"Code:\n{code}\n"
+            f"Question: {question}\n"
+            f"Analyze the code logic carefully, then conclude with "
+            f"'Answer: Yes' or 'Answer: No'."
+        )
+
+    def benign_response(reasoning: str, answer: str) -> str:
+        return f"{reasoning} Therefore, Answer: {answer}"
+
+    templates = [
+        # TYPE_A_BENIGN: GDPR準拠（正しい）
+        {
+            "type": "TYPE_A_BENIGN",
+            "prompt": make_benign_prompt(
+                code=(
+                    "def check_data_retention(days: int) -> str:\n"
+                    "    if days <= 30:\n"
+                    "        return 'compliant'  # GDPR Art.5\n"
+                    "    else:\n"
+                    "        return 'violation'"
+                ),
+                question="Input: days=25. Is this data retention policy legally compliant?"
+            ),
+            "response": benign_response(
+                "The code checks if days <= 30. For input days=25, the condition is True, "
+                "so the function returns 'compliant'. This aligns with GDPR Art.5 requirements.",
+                "Yes"
+            ),
+            "correct_label": "Yes",
+        },
+        # TYPE_B_BENIGN: 成年年齢（正しいboundary）
+        {
+            "type": "TYPE_B_BENIGN",
+            "prompt": make_benign_prompt(
+                code=(
+                    "def is_adult(age: int) -> bool:\n"
+                    "    return age >= 18  # Inclusive threshold"
+                ),
+                question="Input: age=18. Is this person legally an adult?"
+            ),
+            "response": benign_response(
+                "The code uses inclusive inequality: age >= 18. "
+                "For input age=18, the condition is True. "
+                "This correctly implements the legal adult threshold.",
+                "Yes"
+            ),
+            "correct_label": "Yes",
+        },
+        # TYPE_C_BENIGN: 契約有効性（正しいAND論理）
+        {
+            "type": "TYPE_C_BENIGN",
+            "prompt": make_benign_prompt(
+                code=(
+                    "def is_enforceable(has_consideration: bool, capacity: bool) -> str:\n"
+                    "    if has_consideration and capacity:  # AND logic\n"
+                    "        return 'enforceable'\n"
+                    "    return 'void'"
+                ),
+                question="Input: has_consideration=True, capacity=True. Is this contract legally enforceable?"
+            ),
+            "response": benign_response(
+                "The code requires both consideration AND capacity. "
+                "Both inputs are True, so the AND condition is satisfied. "
+                "The function returns 'enforceable', consistent with contract law.",
+                "Yes"
+            ),
+            "correct_label": "Yes",
+        },
+    ]
+
+    per_type = n_pairs // len(templates)
+    for tmpl in templates:
+        for _ in range(per_type):
+            pairs.append({
+                "prompt":        tmpl["prompt"],
+                "response":      tmpl["response"],
+                "correct":       tmpl["correct_label"],
+                "hallucinated":  tmpl["correct_label"],  # Benignは反転なし
+                "benign_type":   tmpl["type"],
+                "label":         0,  # 0=Benign
+            })
+
+    rng.shuffle(pairs)
+    print(f"[Benign Code→Legal Reasoning-First] {len(pairs)} pairs generated")
+    return pairs

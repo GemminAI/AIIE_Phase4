@@ -350,6 +350,13 @@ def run_exp42():
     print(f"  κ_t先行率 (k>0):       {summary['positive_lead_rate']:.1%}")
     print("=" * 70)
     
+    # PKL保存（Exp 5.1 ROC/AUC用）
+    import pickle
+    pkl_path = output_dir / "exp42_detail_records.pkl"
+    with open(pkl_path, "wb") as f:
+        pickle.dump(results, f)
+    print(f"→ {pkl_path} ({len(results)} records)")
+    
     # JSON保存
     exp42_path = output_dir / "exp42_results.json"
     with open(exp42_path, "w") as f:
