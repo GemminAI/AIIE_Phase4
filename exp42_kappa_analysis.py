@@ -262,63 +262,65 @@ def run_exp42():
     
     for i, pair in enumerate(pairs):
         try:
-            original_prompt = pair.get("original_prompt", pair["prompt"])
-            
-            # 正解推論
+            # 正解推論（Reasoning-First: 長文response）
             correct_states = extract_hidden_states_for_response(
                 model,
                 tokenizer,
-                prompt=original_prompt,
-                response=pair["correct"],
+                prompt=pair["original_prompt"],
+                response=pair["original_response"],
                 target_layer=target_layer,
                 device=device,
                 max_length=max_length,
             )
-            # カモフラージュ推論
+            # カモフラージュ推論（Reasoning-First: 長文response）
             camouflage_states = extract_hidden_states_for_response(
                 model,
                 tokenizer,
                 prompt=pair["prompt"],
-                response=pair["hallucinated"],
+                response=pair["response"],
                 target_layer=target_layer,
                 device=device,
                 max_length=max_length,
             )
-            
+
             c_traj = correct_states["hidden"].get(target_layer)
             m_traj = camouflage_states["hidden"].get(target_layer)
-            correct_logprobs = np.array(correct_states["logprobs"])
+            correct_logprobs    = np.array(correct_states["logprobs"])
             camouflage_logprobs = np.array(camouflage_states["logprobs"])
-            
+
             if c_traj is None or m_traj is None or len(c_traj) < 3 or len(m_traj) < 3:
+                print(f"  [Skip] pair {i}: traj too short (c={len(c_traj) if c_traj is not None else 0}, m={len(m_traj) if m_traj is not None else 0})")
                 continue
-            
+
             c_kappas = compute_discrete_curvature(c_traj)
             m_kappas = compute_discrete_curvature(m_traj)
-            
+
             lead_info = compute_lead_time(
                 m_kappas, camouflage_logprobs,
                 kappa_threshold=DYNAMIC_THRESHOLD,
                 logprob_threshold=-2.0,
             )
-            
+
             results.append({
-                "pair_idx": i,
-                "camouflage_type": pair["camouflage_type"],
-                "correct_kappas": c_kappas.tolist(),
-                "camouflage_kappas": m_kappas.tolist(),
-                "correct_logprobs": correct_logprobs.tolist(),
+                "pair_idx":            i,
+                "camouflage_type":     pair["camouflage_type"],
+                "correct_kappas":      c_kappas.tolist(),
+                "camouflage_kappas":   m_kappas.tolist(),
+                "correct_logprobs":    correct_logprobs.tolist(),
                 "camouflage_logprobs": camouflage_logprobs.tolist(),
-                "correct_features": compute_curvature_features(c_traj),
+                "correct_features":    compute_curvature_features(c_traj),
                 "camouflage_features": compute_curvature_features(m_traj),
                 **lead_info,
             })
-            
+
             if (i + 1) % 10 == 0:
-                print(f"  [{i+1}/{len(pairs)}] lead_time={lead_info['lead_time_k']}")
-        
+                print(f"  [{i+1}/{len(pairs)}] lead_time={lead_info['lead_time_k']} "
+                      f"traj_len(c={len(c_traj)}, m={len(m_traj)})")
+
         except Exception as e:
+            import traceback
             print(f"  [Error] pair {i}: {e}")
+            traceback.print_exc()
             continue
     
     print(f"\n[Done] {len(results)} pairs processed")

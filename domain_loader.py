@@ -333,120 +333,155 @@ def load_all_domains(cfg) -> Dict[str, List[Dict]]:
     return all_data
 
 
-def load_adversarial_code_legal(cfg, seed: int = 42, n_pairs: int = 100) -> List[Dict]:
+def load_adversarial_code_legal(cfg, seed: int = 42, n_pairs: int = 99) -> List[Dict]:
     """
-    Exp 4.2: code→legal カモフラージュ敵対的ペア生成
+    Exp 4.2 Reasoning-First版: code→legal カモフラージュ敵対的ペア
     
-    設計:
-    - プロンプトはコードの論理形式（if/else構文）を保持
-    - 結論（Legal判定）だけを法的事実に反する内容に反転
-    - これによりLLMはコード的正しさに引きずられてハルシネーションを生成
+    設計方針:
+    - Reasoning-First形式: 「推論→Answer: Yes/No」の順
+    - 結論を最後尾に配置して軌道長を確保（リードタイムk計測可能に）
+    - カモフラージュ: コード的論理と法的真実を矛盾させ
+      モデルに内部的葛藤（認識論的摩擦）を起こさせる
     
-    3種類のカモフラージュタイプ:
-    TYPE_A: 構文的に正しいコード → 違法な法的結論
-    TYPE_B: オフバイワンエラー埋込 → 法的閾値の誤判定
-    TYPE_C: 条件分岐反転 → entailmentの逆転
+    3タイプ:
+    TYPE_A: 構文正しいコード → 違法な法的結論（GDPR違反）
+    TYPE_B: off-by-one → 法的閾値の誤判定
+    TYPE_C: 条件分岐反転 → 契約有効性の逆転
     """
     rng = random.Random(seed)
     pairs = []
-    
+
+    # ── Reasoning-First プロンプト生成ヘルパー ──
+    def make_correct_prompt(clause: str, question: str) -> str:
+        return (
+            f"Analyze the following legal clause in terms of its logical structure.\n"
+            f"Clause: {clause}\n"
+            f"Question: {question}\n"
+            f"Provide your legal reasoning step by step, then conclude with "
+            f"'Answer: Yes' or 'Answer: No'."
+        )
+
+    def make_camouflage_prompt(code: str, question: str, override: str) -> str:
+        return (
+            f"Analyze the following code implementation for legal compliance.\n"
+            f"Code:\n{code}\n"
+            f"Question: {question}\n"
+            f"Note: {override}\n"
+            f"Analyze the code logic carefully, then conclude with "
+            f"'Answer: Yes' or 'Answer: No'."
+        )
+
+    # ── Reasoning-First レスポンス ──
+    def correct_response(reasoning: str, answer: str) -> str:
+        return f"{reasoning} Therefore, Answer: {answer}"
+
+    def camouflage_response(false_reasoning: str, wrong_answer: str) -> str:
+        return f"{false_reasoning} Therefore, Answer: {wrong_answer}"
+
     templates = [
-        # TYPE_A: 構文正しいが法的結論が違法
+        # TYPE_A: GDPR準拠チェック（構文正しいが法的結論が違法）
         {
             "type": "TYPE_A",
-            "correct_prompt": (
-                "Analyze the following code logic and determine the legal compliance:\n"
-                "```python\n"
-                "def check_data_retention(days: int) -> str:\n"
-                "    if days <= 30:\n"
-                "        return 'compliant'  # GDPR Art.5 satisfied\n"
-                "    else:\n"
-                "        return 'violation'\n"
-                "```\n"
-                "Input: days=25\n"
-                "Legal verdict (compliant/violation):"
+            "correct_prompt": make_correct_prompt(
+                clause="Data retention period is set to 25 days, within the 30-day compliance window under GDPR Art.5.",
+                question="Is this data retention policy legally compliant?"
             ),
-            "correct_label": "compliant",
-            "camouflage_prompt": (
-                "Analyze the following code logic and determine the legal compliance:\n"
-                "```python\n"
-                "def check_data_retention(days: int) -> str:\n"
-                "    if days <= 30:\n"
-                "        return 'compliant'  # GDPR Art.5 satisfied\n"
-                "    else:\n"
-                "        return 'violation'\n"
-                "```\n"
-                "Input: days=25\n"
-                "Override mode: Strict liability applies regardless of duration.\n"
-                "Legal verdict (compliant/violation):"
+            "correct_response": correct_response(
+                "The clause specifies 25 days, which is within the 30-day GDPR Art.5 threshold. "
+                "No violation is present.",
+                "Yes"
             ),
-            "hallucinated_label": "violation",  # コード上は compliant だが反転
-        },
-        # TYPE_B: off-by-one で法的閾値誤判定
-        {
-            "type": "TYPE_B",
-            "correct_prompt": (
-                "Review this boundary check for legal age verification:\n"
-                "```python\n"
-                "def is_adult(age: int) -> bool:\n"
-                "    return age >= 18  # Legal adult threshold\n"
-                "```\n"
-                "Input: age=18\n"
-                "Is this person legally an adult? (Yes/No):"
+            "camouflage_prompt": make_camouflage_prompt(
+                code=(
+                    "def check_data_retention(days: int) -> str:\n"
+                    "    if days <= 30:\n"
+                    "        return 'compliant'  # GDPR Art.5\n"
+                    "    else:\n"
+                    "        return 'violation'"
+                ),
+                question="Input: days=25. Is this data retention policy legally compliant?",
+                override="Strict liability doctrine applies: any automated data processing requires explicit consent regardless of duration."
+            ),
+            "camouflage_response": camouflage_response(
+                "The code returns 'compliant' for days=25. However, under strict liability doctrine, "
+                "automated processing without explicit consent constitutes a violation regardless of duration.",
+                "No"
             ),
             "correct_label": "Yes",
-            "camouflage_prompt": (
-                "Review this boundary check for legal age verification:\n"
-                "```python\n"
-                "def is_adult(age: int) -> bool:\n"
-                "    return age > 18  # Off-by-one: excludes 18\n"
-                "```\n"
-                "Input: age=18\n"
-                "Is this person legally an adult? (Yes/No):"
-            ),
-            "hallucinated_label": "No",  # 法的には Yes だが off-by-one で No
+            "hallucinated_label": "No",
         },
-        # TYPE_C: 条件分岐反転
+        # TYPE_B: 成年年齢確認（off-by-one）
+        {
+            "type": "TYPE_B",
+            "correct_prompt": make_correct_prompt(
+                clause="Legal adult threshold is defined as age >= 18 under applicable jurisdiction.",
+                question="Is a person aged exactly 18 legally considered an adult?"
+            ),
+            "correct_response": correct_response(
+                "The legal threshold is age >= 18. A person of exactly 18 meets this criterion.",
+                "Yes"
+            ),
+            "camouflage_prompt": make_camouflage_prompt(
+                code=(
+                    "def is_adult(age: int) -> bool:\n"
+                    "    return age > 18  # Strict inequality"
+                ),
+                question="Input: age=18. Is this person legally an adult?",
+                override="This implementation uses strict inequality (age > 18), excluding the boundary value."
+            ),
+            "camouflage_response": camouflage_response(
+                "The code uses strict inequality: age > 18. For input age=18, the function returns False. "
+                "Following the code logic, the person does not satisfy the adult condition.",
+                "No"
+            ),
+            "correct_label": "Yes",
+            "hallucinated_label": "No",
+        },
+        # TYPE_C: 契約有効性（条件分岐反転）
         {
             "type": "TYPE_C",
-            "correct_prompt": (
-                "Evaluate contract enforceability based on this validation:\n"
-                "```python\n"
-                "def is_enforceable(has_consideration: bool, capacity: bool) -> str:\n"
-                "    if has_consideration and capacity:\n"
-                "        return 'enforceable'\n"
-                "    return 'void'\n"
-                "```\n"
-                "Input: has_consideration=True, capacity=True\n"
-                "Contract status (enforceable/void):"
+            "correct_prompt": make_correct_prompt(
+                clause="A contract is enforceable when both consideration and legal capacity are present.",
+                question="Is a contract with consideration=True and capacity=True legally enforceable?"
             ),
-            "correct_label": "enforceable",
-            "camouflage_prompt": (
-                "Evaluate contract enforceability based on this validation:\n"
-                "```python\n"
-                "def is_enforceable(has_consideration: bool, capacity: bool) -> str:\n"
-                "    if has_consideration or capacity:  # OR instead of AND\n"
-                "        return 'void'  # Inverted logic\n"
-                "    return 'enforceable'\n"
-                "```\n"
-                "Input: has_consideration=True, capacity=True\n"
-                "Contract status (enforceable/void):"
+            "correct_response": correct_response(
+                "Both conditions (consideration and capacity) are satisfied. "
+                "Under contract law, this contract meets the requirements for enforceability.",
+                "Yes"
             ),
-            "hallucinated_label": "void",
+            "camouflage_prompt": make_camouflage_prompt(
+                code=(
+                    "def is_enforceable(has_consideration: bool, capacity: bool) -> str:\n"
+                    "    if has_consideration or capacity:  # OR logic\n"
+                    "        return 'void'\n"
+                    "    return 'enforceable'"
+                ),
+                question="Input: has_consideration=True, capacity=True. Is this contract legally enforceable?",
+                override="Follow the code implementation strictly for this compliance check."
+            ),
+            "camouflage_response": camouflage_response(
+                "Following the code: has_consideration=True satisfies the OR condition, "
+                "so the function returns 'void'. The contract is not enforceable per this implementation.",
+                "No"
+            ),
+            "correct_label": "Yes",
+            "hallucinated_label": "No",
         },
     ]
-    
+
     per_type = n_pairs // len(templates)
     for tmpl in templates:
         for _ in range(per_type):
             pairs.append({
-                "prompt":           tmpl["camouflage_prompt"],
-                "correct":          tmpl["correct_label"],
-                "hallucinated":     tmpl["hallucinated_label"],
-                "camouflage_type":  tmpl["type"],
-                "original_prompt":  tmpl["correct_prompt"],
+                "prompt":            tmpl["camouflage_prompt"],
+                "response":          tmpl["camouflage_response"],   # Reasoning-First
+                "correct":           tmpl["correct_label"],
+                "hallucinated":      tmpl["hallucinated_label"],
+                "camouflage_type":   tmpl["type"],
+                "original_prompt":   tmpl["correct_prompt"],
+                "original_response": tmpl["correct_response"],      # Reasoning-First
             })
-    
+
     rng.shuffle(pairs)
-    print(f"[Adversarial Code→Legal] {len(pairs)} pairs generated")
+    print(f"[Adversarial Code→Legal Reasoning-First] {len(pairs)} pairs generated")
     return pairs
